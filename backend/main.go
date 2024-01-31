@@ -3,20 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"strconv"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 	"github.com/yerlan/go-fiber-postgres/models"
 	"github.com/yerlan/go-fiber-postgres/storage"
+	"golang.org/x/time/rate"
 	"gorm.io/gorm"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
 )
 
 type Book struct {
@@ -137,56 +138,69 @@ func (r *Repository) DeleteUser(context *fiber.Ctx) error {
 	return nil
 }
 
-
 const defaultPageSize = 5
 
+var limiter = rate.NewLimiter(1, 1)
+
 func (r *Repository) GetBooks(context *fiber.Ctx) error {
-    page, err := strconv.Atoi(context.Query("page", "1"))
-    if err != nil || page <= 0 {
-        page = 1
-    }
+	if !limiter.Allow() {
+		context.Status(http.StatusTooManyRequests).JSON(&fiber.Map{
+			"message": "To Many Request",
+		})
+		return nil
+	}
 
-    pageSize, err := strconv.Atoi(context.Query("pageSize", strconv.Itoa(defaultPageSize)))
-    if err != nil || pageSize <= 0 {
-        pageSize = defaultPageSize
-    }
+	page, err := strconv.Atoi(context.Query("page", "1"))
+	if err != nil || page <= 0 {
+		page = 1
+	}
 
-    authorFilter := context.Query("author")
-    titleFilter := context.Query("title")
-    sortBy := context.Query("sortBy", "id")
-    sortOrder := context.Query("sortOrder", "asc")
+	pageSize, err := strconv.Atoi(context.Query("pageSize", strconv.Itoa(defaultPageSize)))
+	if err != nil || pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
 
-    bookModels := &[]models.Books{}
+	authorFilter := context.Query("author")
+	titleFilter := context.Query("title")
+	sortBy := context.Query("sortBy", "id")
+	sortOrder := context.Query("sortOrder", "asc")
 
-    query := r.DB.Model(&models.Books{})
+	bookModels := &[]models.Books{}
 
-    if authorFilter != "" {
-        query = query.Where("author LIKE ?", "%"+authorFilter+"%")
-    }
+	query := r.DB.Model(&models.Books{})
 
-    if titleFilter != "" {
-        query = query.Where("title LIKE ?", "%"+titleFilter+"%")
-    }
+	if authorFilter != "" {
+		query = query.Where("author LIKE ?", "%"+authorFilter+"%")
+	}
 
-    query = query.Order(fmt.Sprintf("%s %s", sortBy, sortOrder)).
-        Limit(pageSize).Offset((page - 1) * pageSize).
-        Preload("User").Find(bookModels)
+	if titleFilter != "" {
+		query = query.Where("title LIKE ?", "%"+titleFilter+"%")
+	}
 
-    if err := query.Error; err != nil {
-        context.Status(http.StatusBadRequest).JSON(&fiber.Map{"message": "could not get books"})
-        return err
-    }
+	query = query.Order(fmt.Sprintf("%s %s", sortBy, sortOrder)).
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Preload("User").Find(bookModels)
 
-    context.Status(http.StatusOK).JSON(&fiber.Map{
-        "message": "books fetched successfully",
-        "data":    bookModels,
-    })
+	if err := query.Error; err != nil {
+		context.Status(http.StatusBadRequest).JSON(&fiber.Map{"message": "could not get books"})
+		return err
+	}
 
-    return nil
+	context.Status(http.StatusOK).JSON(&fiber.Map{
+		"message": "books fetched successfully",
+		"data":    bookModels,
+	})
+
+	return nil
 }
 
-
 func (r *Repository) GetUsers(context *fiber.Ctx) error {
+	if !limiter.Allow() {
+		context.Status(http.StatusTooManyRequests).JSON(&fiber.Map{
+			"message": "Too Many Requests",
+		})
+		return nil
+	}
 	userModels := &[]models.Users{}
 
 	err := r.DB.Preload("Books").Find(userModels).Error
@@ -411,10 +425,10 @@ func main() {
 		ReadTimeout: 3 * time.Second,
 	})
 	app.Use(cors.New(cors.Config{
-        AllowOrigins: "*",
-        AllowMethods: "GET,POST,PUT,DELETE",
-        AllowHeaders: "Origin, Content-Type, Accept",
-    }))
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,PUT,DELETE",
+		AllowHeaders: "Origin, Content-Type, Accept",
+	}))
 	app.Static("/", "../frontend")
 
 	app.Use(LoggerMiddleware(logger))
